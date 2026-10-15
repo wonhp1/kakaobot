@@ -1,0 +1,184 @@
+diff --git a/src/ax_send.rs b/src/ax_send.rs
+index 32014c5..eeb9aca 100644
+--- a/src/ax_send.rs
++++ b/src/ax_send.rs
+@@ -247,7 +247,7 @@ mod imp {
+     const COMPOSER_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+     const SNAPSHOT_MAX_DEPTH: usize = 128;
+     const SNAPSHOT_MAX_NODES: usize = 20_000;
+-    const SNAPSHOT_MAX_DURATION: Duration = Duration::from_secs(5);
++    const SNAPSHOT_MAX_DURATION: Duration = Duration::from_secs(30); // PATCHED: 5 -> 30 (채팅방 451개 환경에서 5초 예산 초과. docs/patches 참조)
+     const AX_MESSAGE_TIMEOUT_SECS: f32 = 1.0;
+ 
+     /// Find the running, Kakao-signed KakaoTalk process.
+@@ -859,6 +859,10 @@ mod imp {
+         pub time: Option<String>,
+         pub text: String,
+         pub outgoing: bool,
++        /// PATCHED (003): sender display name scraped from the row's second
++        /// `AXStaticText`. `None` for own (outgoing) messages and for system
++        /// notices, which carry no name label.
++        pub sender: Option<String>,
+     }
+ 
+     /// Scrape every message bubble currently rendered in a chat window's
+@@ -882,30 +886,66 @@ mod imp {
+     }
+ 
+     fn read_visible_messages_from_node(table: &AxNode) -> Vec<AxMessage> {
+-        let table_center_x = table
+-            .position_x
+-            .zip(table.width)
+-            .map(|(position_x, width)| position_x + width / 2.0);
++        let table_bounds = table.position_x.zip(table.width);
+         let mut rows = Vec::new();
+         table.find_all("AXRow", &mut rows);
+ 
+         rows.iter()
+             .filter_map(|row| {
+                 let (text, bubble) = message_row_text(row)?;
+-                let outgoing = table_center_x
++                // PATCHED (005): decide the side by MARGINS, not by the bubble's
++                // centre. KakaoTalk pins an incoming bubble's LEFT edge to a fixed
++                // inset (64px on 2026-09-20) and an outgoing bubble's RIGHT edge to
++                // another (22px); the bubble grows toward the middle from there.
++                // The old centre test therefore drifted with message length: the
++                // longest incoming message measured in the test room cleared the
++                // table centre by only 8px, so a slightly longer question would
++                // have been read as our own message and silently ignored.
++                let outgoing = table_bounds
+                     .zip(bubble.position_x.zip(bubble.width))
+-                    .is_some_and(|(table_center, (position_x, width))| {
+-                        position_x + width / 2.0 > table_center
++                    .is_some_and(|((table_x, table_width), (position_x, width))| {
++                        let left_margin = position_x - table_x;
++                        let right_margin = (table_x + table_width) - (position_x + width);
++                        right_margin < left_margin
+                     });
+ 
+-                let time = row
+-                    .find_first("AXStaticText")
+-                    .and_then(|t| t.help.clone().or_else(|| t.value.clone()));
++                // PATCHED (003): a group-chat row carries two `AXStaticText`
++                // labels and KakaoTalk distinguishes them by `AXHelp`:
++                //
++                //   AXStaticText value="1\n13:16" help="2026. 9. 17."  <- time
++                //   AXStaticText value="Kim"       help=<none>          <- sender
++                //
++                // Upstream takes `find_first("AXStaticText")` for the time and
++                // discards the sender entirely, which makes per-user rate
++                // limiting and self-message filtering impossible. Split them:
++                // the label carrying `help` is the timestamp, the first
++                // remaining label is the sender name.
++                let mut labels = Vec::new();
++                row.find_all("AXStaticText", &mut labels);
++
++                let time_label = labels.iter().find(|label| label.help.is_some());
++                // PATCHED (005): only a label carrying `help` is a timestamp.
++                // The old fallback took the first label's value, so a row that
++                // shows a name but no clock (the first message of a burst)
++                // reported time="Kim" — the sender's name as the time.
++                let time = time_label.and_then(|label| label.help.clone());
++
++                let sender = labels
++                    .iter()
++                    .filter(|label| label.help.is_none())
++                    .find_map(|label| {
++                        label
++                            .value
++                            .as_ref()
++                            .map(|value| value.trim().to_string())
++                            .filter(|value| !value.is_empty())
++                    });
+ 
+                 Some(AxMessage {
+                     time,
+                     text,
+                     outgoing,
++                    sender,
+                 })
+             })
+             .collect()
+@@ -988,7 +1028,10 @@ mod imp {
+         ensure_ax_permission()?;
+         let app = bounded_application(pid)?;
+ 
+-        open_chat_row(&app, chat_display_name)?;
++        // PATCHED (002): same rationale as the send path above.
++        if find_chat_window(&app, chat_display_name)?.is_none() {
++            open_chat_row(&app, chat_display_name)?;
++        }
+ 
+         let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+         let mut messages = loop {
+@@ -1024,10 +1067,20 @@ mod imp {
+         ensure_ax_permission()?;
+         let app = bounded_application(pid)?;
+ 
+-        // Always resolve the target through the chat list, even when an exact-
+-        // title window is already open. Otherwise one of two same-named rooms
+-        // could bypass the list-level ambiguity check through the old fast path.
+-        open_chat_row(&app, chat_display_name)?;
++        // PATCHED (002): KakaoTalk 25.9.1 exposes no AXPress/AXConfirm on chat
++        // rows or the chat table, so `open_chat_row` can never open a room on
++        // this build. Fall back to an already-open window first.
++        //
++        // The original comment warned that skipping the list lookup lets one of
++        // two same-named rooms bypass the list-level ambiguity check. That
++        // property is preserved here: `find_chat_window` matches on the FULL
++        // window title and returns `ChatMatch::Ambiguous` -> Err when more than
++        // one open window matches exactly, so a duplicate name is still refused
++        // rather than guessed. Requiring the target room to be open in its own
++        // window matches the operating requirement in the project plan (§7).
++        if find_chat_window(&app, chat_display_name)?.is_none() {
++            open_chat_row(&app, chat_display_name)?;
++        }
+ 
+         let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+         let elements = loop {
+@@ -1275,6 +1328,7 @@ mod stub {
+         pub time: Option<String>,
+         pub text: String,
+         pub outgoing: bool,
++        pub sender: Option<String>,
+     }
+ 
+     pub fn send_via_ax_classified(
+diff --git a/src/commands/ax_read.rs b/src/commands/ax_read.rs
+index 2dcad8e..277de59 100644
+--- a/src/commands/ax_read.rs
++++ b/src/commands/ax_read.rs
+@@ -23,9 +23,15 @@ pub fn cmd_ax_read(opts: AxReadOptions) -> Result<()> {
+         let items: Vec<_> = messages
+             .iter()
+             .map(|m| {
++                // PATCHED (003): expose `sender` and `outgoing`. The Python
++                // service needs both — `outgoing` is the primary self-message
++                // filter (infinite-loop guard) and `sender` drives per-user
++                // rate limiting and questioner-scoped context.
+                 serde_json::json!({
+                     "time": m.time,
+                     "text": m.text,
++                    "sender": m.sender,
++                    "outgoing": m.outgoing,
+                 })
+             })
+             .collect();
+@@ -37,9 +43,15 @@ pub fn cmd_ax_read(opts: AxReadOptions) -> Result<()> {
+         println!("No visible messages found in chat \"{chat_name}\".");
+     } else {
+         for m in &messages {
++            // PATCHED (003): show direction and sender in the human output too.
++            let who = if m.outgoing {
++                "<나>".to_string()
++            } else {
++                m.sender.clone().unwrap_or_else(|| "<시스템>".to_string())
++            };
+             match &m.time {
+-                Some(t) => println!("[{t}] {}", m.text),
+-                None => println!("{}", m.text),
++                Some(t) => println!("[{t}] {who}: {}", m.text),
++                None => println!("{who}: {}", m.text),
+             }
+         }
+         println!(

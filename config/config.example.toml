@@ -1,0 +1,161 @@
+# 카카오톡 오픈채팅 AI 답변 봇 설정
+# 처음 쓸 때: 이 파일을 config/config.toml 로 복사한다 (scripts/setup.sh 가 해 준다).
+# config/config.toml 은 git 에 올라가지 않는다 — 방 이름·닉네임이 들어가므로.
+
+[mode]
+current = "claude-cli"       # "claude-cli" | "local" | "api". 메뉴바에서 전환
+enabled = true              # 전체 ON/OFF. 메뉴바에서 토글
+dry_run = true                # true면 전송하지 않고 로그만 남긴다. 확인이 끝나면 메뉴바 '실제 전송 켜기'
+
+[room]
+# Phase 0 §5-2: chatId 이중 검증은 AX 경로에서 불가능하므로 표시 이름으로만 식별한다.
+# 동명 방이 있으면 openkakao-cli가 거부한다 (ChatMatch::Ambiguous).
+# 봇이 볼 방의 이름 — 카카오톡 방 창의 제목과 **정확히** 같아야 한다.
+# 보내려면 ~/.config/openkakao/config.toml 의 [safety] allowed_send_chats 에도 같은 이름을 넣는다.
+name = ""
+
+[poll]
+# 방과 '댓글 알림'을 얼마마다 볼지 (2026-09-26 운영자 결정: 1분 — 실시간일 필요는 없다).
+# 답은 질문 뒤 최대 1분(+답 만드는 시간) 늦게 달린다. 바꾸면 다음 폴링부터 적용된다.
+# 쉬는 동안에도 10초마다 상태를 적으므로 메뉴바가 '응답 없음'으로 보지 않는다.
+interval_secs = 60
+
+[trigger]
+# D2 확정 (2026-09-19): 물음표로 끝나는 문장 + 운영자 @멘션
+on_question_mark = true      # "?"로 끝나는 문장
+on_mention = true            # "@닉네임" 이 들어간 문장
+# 이 방에서 운영자가 쓰는 오픈채팅 닉네임. 방마다 다를 수 있다.
+# "봇" 같은 낱말은 넣지 말 것 — "챗봇" 같은 말에도 반응한다.
+mention_names = []           # 예: ["홍길동"]
+min_length = 4               # 이보다 짧으면 무시 (멘션은 예외)
+
+# D2 보강 (2026-09-20): 물음표 없는 질문도 잡는다. 단 **추측**이므로
+# 지식베이스와 weak_threshold 이상 가까울 때만 답하고, 아니면 조용히 넘어간다
+# (잡담에 안내 문구가 뿌려지지 않게). LLM 은 부르지 않는다.
+on_question_ending = true    # "~나요" "~까요" "궁금해요", 의문사("얼마에요") 같은 묻는 말투
+on_similarity = true         # 어미에 안 걸려도 모든 메시지를 지식베이스와 대조
+# 어미 단서가 없이 유사도만으로 판단할 때 쓰는 높은 문턱.
+# 어미 단서가 있으면 [rag] confidence_threshold(0.58)를 쓴다.
+# 2026-09-20 측정: 자료에 답이 있는 질문 0.607~0.778 / 잡담 최고 0.581.
+weak_threshold = 0.70
+
+[rate_limit]
+# 사용자별 쿨다운. 2026-09-26 운영자 결정으로 끈다(0) — 한 번 확인할 때 같은 사람이 이어 보낸
+# 메시지는 한 질문으로 묶어 한 번에 답하므로, 둘째 질문을 버리던 이 규칙은 필요 없다.
+user_cooldown_secs = 0
+room_per_minute = 5          # 방 전체 분당 상한 (§6-5)
+
+[circuit_breaker]
+max_consecutive_errors = 3   # 연속 오류 N회 → 자동 정지
+# 상태를 못 읽으면 차단으로 처리 (fail-closed, §4 openkakao-bot 레퍼런스)
+
+[context]
+window_turns = 5             # 질문자별 최근 N턴 슬라이딩 윈도우 (§6-2)
+max_age_minutes = 30         # 이보다 오래된 발화는 맥락에서 뺀다. 어제 질문에 오늘 질문이 엮이지 않게
+
+[rag]
+knowledge_dir = "data/knowledge"   # 답변 근거가 되는 문서 폴더
+top_k = 4
+confidence_threshold = 0.58        # D3 확정. 측정 근거는 docs/rag-tuning.md
+embed_model = "BAAI/bge-m3"        # 다국어. 한국어 검색 양호
+
+[local]
+# D7: 로컬 LLM — 실행 도구는 새 Mac 구매 뒤 정한다 (2026-09-19).
+# OpenAI 호환 서버면 무엇이든 된다. 도구별 기본 주소 (docs/local-llm.md):
+#   MLX-LM  http://localhost:8080/v1    LM Studio  http://localhost:1234/v1
+#   Ollama  http://localhost:11434/v1   llama.cpp  http://localhost:8080/v1
+# 둘 다 비어 있으면 로컬 모드로 바꿀 수 없다 (설정 오류로 멈춘다).
+endpoint = ""
+model = ""                   # 서버에 올린 모델 id 그대로 (예: Ollama 는 "qwen3:32b")
+max_tokens = 700
+temperature = 0.2            # 근거 기반 안내라 낮게. 파인튜닝 후 말투가 단조로우면 조금 올린다
+timeout_secs = 90            # 응답 읽기 제한
+connect_timeout_secs = 3     # 서버가 꺼져 있으면 빨리 실패해야 보조 백엔드로 넘어간다
+api_key_env = ""             # 서버가 키를 요구하면 그 키를 담은 환경변수 이름 (키 자체는 쓰지 말 것)
+# 도구별 추가 요청 필드. 예) Qwen3 계열의 생각 과정 끄기 (llama.cpp·vLLM):
+# extra_body = { chat_template_kwargs = { enable_thinking = false } }
+extra_body = {}
+
+[api]
+provider = "anthropic"
+model = "claude-haiku-4-5"   # D5 확정
+max_tokens = 700
+# API 키는 여기 쓰지 말 것 — 환경변수 ANTHROPIC_API_KEY
+
+[fallback]
+# 주 백엔드가 연결 실패·시간 초과·서버 오류로 답을 못 내면 `to` 로 한 번 더 묻는다.
+# '답변불가'·출력 검증 차단은 실패가 아니므로 넘기지 않는다.
+# 로컬(파인튜닝 말투) → 클라우드로 넘기면 그 답만 말투가 달라진다. 켤지는 운영 결정.
+enabled = false
+to = "claude-cli"            # "claude-cli" | "api" | "local"
+
+[output]
+max_chars = 500              # 출력 길이 상한 (§6-6)
+block_links = true           # 외부 링크 차단
+escalation_message = "확인 후 답변드릴게요."   # D11: 답을 못 할 때 항상 이 문구를 댓글로 단다
+# 여러 가지를 물었는데 일부만 근거가 있을 때: 답할 수 있는 것만 답하고 끝에 이 문구를 붙인다.
+# 운영자에게는 답을 못 할 때와 같은 알림이 간다 (2026-09-26 운영자 결정).
+partial_message = "나머지는 확인 후 답변드릴게요."
+
+[style]
+# 말투 지침. 시스템 프롬프트의 답변 규칙 뒤에 붙는다 (규칙보다 우선하지 않는다).
+# 파인튜닝으로 말투를 모델에 넣은 뒤에는 비워도 된다.
+guide = ""
+
+[cli]
+# Phase 0에서 빌드 + 패치 001~003 적용된 바이너리
+openkakao_path = "vendor/openkakao-cli/target/release/openkakao-cli"
+
+[logging]
+dir = "logs"
+level = "INFO"
+# 보존 기간 (2026-09-18 결정). 지나면 날짜 파일째 지운다.
+retention_days_audit = 30      # 봇이 처리한 질문·답변 + 운영 로그 (D3 튜닝, 오답 추적)
+retention_days_filtered = 7    # 봇이 답하지 않은 메시지 원문 (D2 튜닝). 방 전체 잡담이라 짧게
+
+[send]
+# 전송 전 랜덤 지연 (계획서 §6-1 [10]).
+# 즉답이 연속되면 자동화 티가 나고 §9 계정 리스크와 직결된다.
+delay_min_secs = 1.0
+delay_max_secs = 3.0
+# D10 (2026-09-19): 질문 메시지에 댓글로 답한다. 댓글을 못 달면 일반 메시지로 대신 보낸다.
+reply_mode = "thread"        # "thread" | "plain"
+mirror_to_room = true        # 댓글 창의 '채팅방에 함께 보내기' — 방에도 함께 올린다
+
+[notify]
+# 에스컬레이션·자가진단 실패 알림 (계획서 §6-3, D4)
+channel = "telegram"          # "telegram" | "none"
+telegram_chat_id = ""         # 비우면 환경변수 TELEGRAM_CHAT_ID 사용
+# 토큰은 여기 쓰지 말 것 — 환경변수 TELEGRAM_BOT_TOKEN
+
+[canary]
+# 자가진단 주기 (계획서 §6-5). 0이면 끔.
+# 조용한 먹통을 잡는다. 실제 전송은 하지 않고 전송 조건 3가지만 확인한다.
+interval_secs = 3600
+
+[claude_cli]
+# 헤드리스 `claude -p` 백엔드. API 키 없이 구독으로 동작한다.
+# [mode] current = "claude-cli" 로 선택한다.
+# 도구는 --allowedTools "" 로 전부 차단된다 (계획서 §6-6 1항).
+model = "claude-haiku-4-5"
+timeout_secs = 120
+path = ""                    # 비우면 PATH → ~/.local/bin/claude 순으로 찾는다
+
+[photo]
+# 질문과 함께 올라온 사진의 글자를 읽어 검색에 쓴다 (docs/screenshots.md, 2026-09-21 결정).
+# 사진만 올린 메시지에는 반응하지 않는다. 사진 말풍선의 우클릭 메뉴 '저장하기'로 원본을 받아
+# 기기 안에서 글자를 읽은 뒤 파일은 바로 지운다. 화면 기록 권한은 필요 없다.
+enabled = true
+save_dir = "~/Downloads" # 카카오톡 '저장하기'가 파일을 떨어뜨리는 폴더
+
+[followup]
+# 봇이 단 댓글 아래의 추가 질문에 같은 스레드로 답한다 (docs/followup.md, 2026-09-24).
+# 카카오톡 '댓글 알림' 방을 창으로 열어 두어야 한다 (채팅 목록에서 더블클릭). 창이 없으면
+# 이 기능만 쉬고 방의 질문에는 계속 답한다. 답은 첫 답과 같이 방에도 함께 올린다
+# ([send] mirror_to_room). 1인 쿨다운은 걸지 않고, 방 전체 분당 상한은 그대로 지킨다.
+enabled = true
+# '댓글 알림' 맨 위 몇 줄을 볼지. 1분 사이 다른 방 스레드 알림이 여러 개 올라오면 이 방
+# 알림이 밀려 내려갈 수 있어 넉넉히 본다 (20줄 1~2초, 1분에 한 번이라 부담이 작다)
+top = 20
+every_polls = 1              # 방 폴링 몇 번에 한 번 볼지 (1분 × 1 = 1분)
+max_answers_per_thread = 3   # 스레드 하나에 30분 동안 봇이 답하는 횟수 상한

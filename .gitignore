@@ -1,0 +1,26 @@
+# --- 이 맥에서만 쓰는 것 ---
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# --- 실행하면 생기는 것 ---
+logs/
+data/run/
+data/finetune/
+
+# --- 개인 설정·자료: 방 이름, 닉네임, 실제 대화, 강의 자료 ---
+# 예시는 config/config.example.toml · data/knowledge.example/ (scripts/setup.sh 가 복사한다)
+config/config.toml
+data/knowledge/
+data/knowledge.example/.ocr-cache.json
+
+# --- 내려받아 빌드하는 외부 도구 (scripts/setup.sh 가 받는다) ---
+vendor/
+
+# --- 개발 중 기록·실측 도구 (공개하지 않음) ---
+docs/phase0-report.md
+docs/ax-baseline.txt
+docs/patches/00[1-5]-*.patch
+scripts/probe_*.py

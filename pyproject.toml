@@ -1,0 +1,30 @@
+[project]
+name = "kakaobot"
+version = "0.1.0"
+description = "카카오톡 오픈채팅 AI 답변 봇"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40",
+    "httpx>=0.27",
+    "pydantic>=2.9",
+    "sentence-transformers>=3.0",
+    # 메뉴바가 설정 파일을 고칠 때 주석과 서식을 보존한다
+    "tomlkit>=0.13",
+    "rumps>=0.4",
+    # 댓글 스레드 답장 (kakaobot.thread) — AX 직접 제어
+    "pyobjc-framework-ApplicationServices>=10",
+    "pyobjc-framework-Cocoa>=10",
+    "pyobjc-framework-Quartz>=10",
+    # 지식베이스 스크린샷의 화면 속 글자 읽기 (kakaobot.ocr) — 기기 안에서만 동작
+    "pyobjc-framework-Vision>=10",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kakaobot"]

@@ -1,0 +1,42 @@
+diff --git a/src/ax_send.rs b/src/ax_send.rs
+index eeb9aca..f2424c2 100644
+--- a/src/ax_send.rs
++++ b/src/ax_send.rs
+@@ -1126,11 +1126,32 @@ mod imp {
+         // prompt. At this point the signed process, unique target row, exact
+         // window, empty composer, and pre-send bubble baseline are all known;
+         // authentication happens immediately before the composer is changed.
+-        let authenticated_target =
+-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
+-        openkakao_cli::human_auth::require_device_owner_auth(&format!(
+-            "Approve one KakaoTalk message to ‘{authenticated_target}’ after reviewing the terminal preview"
+-        ))?;
++        // PATCHED (004): device-owner (Touch ID / password) gate REMOVED.
++        //
++        // Upstream requires a human to approve every single AX send. That is
++        // correct for a human-driven CLI but incompatible with an unattended
++        // answering bot, which is this project's whole purpose — one Touch ID
++        // tap per answer means there is no bot.
++        //
++        // WHAT THIS GIVES UP: per-message human review before delivery.
++        // Anything the pipeline decides to send now goes out unreviewed,
++        // including a reply steered by prompt injection from an anonymous
++        // open-chat participant.
++        //
++        // WHAT STILL CONSTRAINS A BAD SEND (project plan 6-5, 6-6):
++        //   - config `safety.allowed_send_chats` — one room, exact name match
++        //   - the service's own room binding, rate limits, circuit breaker
++        //   - dry-run mode
++        //   - output validation before send: length cap, link blocking,
++        //     account/phone-number patterns, system-prompt leak detection
++        //   - RAG grounding: no supporting document -> escalate, do not answer
++        //   - the LLM is given no tools, files, or shell access
++        //
++        // Blast radius is bounded to "text posted into the one bound room".
++        // It cannot reach other rooms, DMs, files, or the network.
++        //
++        // Decision recorded 2026-09-17 by the project owner.
++        // See docs/patches/README.md for the full rationale.
+ 
+         focus_and_verify(&field, "exact target composer")?;
+         field
